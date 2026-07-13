@@ -69,6 +69,14 @@ file "$0" | grep -iE "pdf|epub|zip" && echo "FORMAT_OK" || echo "FORMAT_UNKNOWN"
 
 Check the file extension (`.pdf` or `.epub`) or magic bytes (`%PDF` or `PK` zip header).
 
+**If the file is not found and the argument looks truncated at a space** (a common failure: the user passed an unquoted path like `/books/A Philosophy of Software Design.epub` and only `/books/A` came through), try to recover it:
+
+```bash
+find "$(dirname "$0")" -maxdepth 1 \( -iname "$(basename "$0")*.pdf" -o -iname "$(basename "$0")*.epub" \) 2>/dev/null
+```
+
+If exactly one match is found, tell the user which file you found and proceed with it (mentioning they can re-run with a quoted path if you guessed wrong). If multiple match, list them and ask. If none, stop.
+
 If the file is not found or the format is not supported, stop with a clear error message listing supported formats.
 
 ---
@@ -121,16 +129,12 @@ Read `/tmp/book_skill_work/metadata.json` and present the user with an estimate 
 
 ```
 📖 Book detected: <filename> (<format: PDF or EPUB>)
-📄 Pages/Spine items: ~<N> | Words: ~<N> | Source tokens: ~<N>K
+📄 Pages/Spine items: ~<N> | Chapters: ~<N> | Words: ~<N> | Source tokens: ~<N>K
 
-💰 Estimated token cost (Full Conversion):
+📊 Estimated token usage (Full Conversion):
    Input  (book reading + prompts): ~<N>K tokens
    Output (skill files generated):  ~<N>K tokens
    Total:                           ~<N>K tokens
-
-   Reference prices (as of 2025):
-   Claude Sonnet 4.5 → ~$<X> USD
-   Claude Haiku 4.5  → ~$<X> USD
 
    ⏱  Estimated time: ~<N> minutes
 
@@ -143,9 +147,12 @@ Read `/tmp/book_skill_work/metadata.json` and present the user with an estimate 
 **How to estimate:**
 - Input tokens ≈ `estimated_tokens` from metadata × 1.3 (prompts overhead per chapter pass)
 - Output tokens ≈ chapters × 1,000 + 4,000 (SKILL.md) + 4,500 (glossary + patterns + cheatsheet)
-- Price: Sonnet input=$3/MTok output=$15/MTok — Haiku input=$0.80/MTok output=$4/MTok
+
+**On cost:** do NOT present a dollar figure by default. Users on subscription plans (Pro/Max) are not billed per token — the work only draws against their usage limits, and a dollar estimate reads as a bill. Only if the user asks what it would cost, or says they use the pay-per-token API, translate using current API prices (as of 2025: Sonnet in=$3/MTok out=$15/MTok, Haiku in=$0.80/MTok out=$4/MTok) and label it clearly as "API-equivalent — not billed on subscription plans".
 
 Wait for the user to confirm before proceeding. If they say "analyze only", switch to Mode 2.
+
+**Reduce round-trips:** present this confirmation together with the Step 4 (purpose) and Step 5 (skill name) questions as a single multi-question prompt, so the user answers everything at once and the rest of the conversion runs uninterrupted.
 
 ---
 
@@ -158,6 +165,14 @@ Read the first 8,000 characters of `/tmp/book_skill_work/full_text.txt` to ident
 - Approximate number of chapters
 
 Then read the Table of Contents section if present to map all chapters.
+
+**Verify the chapter count independently — `chapters_detected` in metadata.json is a heuristic.** Cross-check against the ToC, and map the actual body chapter boundaries with something like:
+
+```bash
+grep -nE "^Chapter [0-9]+$" /tmp/book_skill_work/full_text.txt
+```
+
+Beware two traps: (a) ToC entries and in-prose cross-references ("Chapter 18 discusses...") also mention chapter numbers — a true heading is a line containing *only* the marker, followed shortly by a title line, and body headings appear *after* the front matter; (b) line-wrapped prose can put "Chapter N" at the start of a line. When in doubt, read a few lines after each candidate heading to confirm it starts a chapter rather than referencing one. Record the line offsets of each confirmed chapter start — Step 7 uses them.
 
 **If mode is "Analyze Only":** produce the extraction report now and stop. Structure:
 ```
@@ -228,7 +243,11 @@ mkdir -p ~/.claude/skills/<skill_name>/chapters
 
 For EACH chapter/major section identified in Step 3:
 
-Read the corresponding section of `/tmp/book_skill_work/full_text.txt` (use character offsets or grep for chapter headings).
+Read the corresponding section of `/tmp/book_skill_work/full_text.txt` (use the line offsets recorded in Step 3).
+
+**Pipeline the work to cut wall-clock time:** in each response, WRITE the chapter files for sections you have already read while READING the next batch of chapters — Write and Read calls are independent, so issue them in parallel in the same message. Read 3–5 chapters per batch rather than one at a time.
+
+**Mine the back matter first if it exists:** many books include author-written summaries (e.g. "Summary of Design Principles", key-takeaways appendices, glossaries). Read those early — they are the author's own distillation and should anchor the cheatsheet and SKILL.md rather than your reconstruction.
 
 Create `~/.claude/skills/<skill_name>/chapters/ch<NN>-<slug>.md` using the structure below.
 
@@ -366,6 +385,11 @@ the relevant chapter file before answering.
 
 ## Scope & Limits
 
+<!-- Make this section carry real information, not boilerplate. Include:
+     the publication year and anything dated about it (example languages,
+     tooling); and any positions that are the author's contrarian opinion
+     rather than field consensus, so Claude presents them as the author's
+     view instead of established fact. -->
 This skill covers the book content only. For hands-on implementation in your codebase,
 combine with project-specific tools. For topics beyond this book, check related skills
 or ask Claude directly.

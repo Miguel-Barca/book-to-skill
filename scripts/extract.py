@@ -222,22 +222,41 @@ def count_pages(pdf_path: str) -> int:
 def detect_structure(text: str) -> dict:
     """Detect chapter count and table of contents presence."""
     import re
-    lines = text[:50000].splitlines()
+    lines = text.splitlines()
 
-    # Look for chapter headings
-    chapter_pattern = re.compile(
-        r"^\s*(chapter\s+\d+|CHAPTER\s+\d+|ch\.\s*\d+|\d+\.\s+[A-Z])",
-        re.IGNORECASE
+    # A heading is a line that is *only* a chapter marker ("Chapter 12"), not a
+    # prose fragment that starts with one after line-wrapping ("Chapter 12
+    # discusses..."). Dedupe by chapter number: cross-references and ToC entries
+    # repeat the same numbers throughout the text.
+    heading_pattern = re.compile(
+        r"^\s*(?:chapter|cap[ií]tulo|ch\.)\s+(\d{1,3})\s*$", re.IGNORECASE
     )
-    chapters_found = [l.strip() for l in lines if chapter_pattern.match(l)]
+    # Fallback for books whose headings are "12. Title" (short title, no
+    # sentence punctuation) rather than an explicit "Chapter 12" line.
+    numbered_pattern = re.compile(r"^\s*(\d{1,3})\.\s+[A-Z][^.]{0,60}$")
+
+    chapter_numbers: set[int] = set()
+    samples: list[str] = []
+    for line in lines:
+        m = heading_pattern.match(line)
+        if m and int(m.group(1)) not in chapter_numbers:
+            chapter_numbers.add(int(m.group(1)))
+            samples.append(line.strip())
+
+    if not chapter_numbers:
+        for line in lines:
+            m = numbered_pattern.match(line)
+            if m and int(m.group(1)) not in chapter_numbers:
+                chapter_numbers.add(int(m.group(1)))
+                samples.append(line.strip())
 
     # Look for ToC indicators
     toc_keywords = ["table of contents", "contents", "índice", "sumário"]
     has_toc = any(kw in text[:5000].lower() for kw in toc_keywords)
 
     return {
-        "chapters_detected": len(chapters_found),
-        "chapter_headings_sample": chapters_found[:10],
+        "chapters_detected": len(chapter_numbers),
+        "chapter_headings_sample": samples[:10],
         "has_toc": has_toc,
     }
 
